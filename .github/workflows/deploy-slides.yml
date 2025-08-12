@@ -52,7 +52,7 @@ jobs:
           echo "projects=$(cat projects.json)" >> $GITHUB_OUTPUT
           echo "Detected projects: $(cat projects.json)"
 
-  build-and-deploy:
+  build:
     needs: detect-changes
     if: needs.detect-changes.outputs.projects != '[]'
     runs-on: ubuntu-latest
@@ -78,17 +78,125 @@ jobs:
         working-directory: ${{ matrix.project }}
         run: npm run build
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slides-${{ matrix.project }}
+          path: ${{ matrix.project }}/dist
+
+  deploy:
+    needs: [detect-changes, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Combine and organize slides
+        run: |
+          mkdir -p combined
+          
+          # Copy each project's dist to its own subdirectory
+          for project in ${{ join(fromJson(needs.detect-changes.outputs.projects), ' ') }}; do
+            if [ -d "artifacts/slides-$project" ]; then
+              mkdir -p "combined/$project"
+              cp -r "artifacts/slides-$project"/* "combined/$project/"
+            fi
+          done
+
+      - name: Generate index page
+        run: |
+          cat > combined/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="ja">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Slidev Projects</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 2rem;
+                background: #f8fafc;
+              }
+              h1 {
+                color: #1e293b;
+                text-align: center;
+                margin-bottom: 2rem;
+              }
+              .projects {
+                display: grid;
+                gap: 1rem;
+              }
+              .project-card {
+                background: white;
+                padding: 1.5rem;
+                border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                text-decoration: none;
+                color: inherit;
+                transition: transform 0.2s;
+              }
+              .project-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+              }
+              .project-name {
+                font-size: 1.25rem;
+                font-weight: 600;
+                color: #3b82f6;
+                margin-bottom: 0.5rem;
+              }
+              .project-description {
+                color: #64748b;
+              }
+            </style>
+          </head>
+          <body>
+            <h1>📊 Slidev Projects</h1>
+            <div class="projects">
+          EOF
+          
+          # Add project links
+          for project in ${{ join(fromJson(needs.detect-changes.outputs.projects), ' ') }}; do
+            # Read project name from package.json if available
+            project_title="$project"
+            if [ -f "$project/package.json" ]; then
+              # Try to get a better name from package.json
+              project_title=$(jq -r '.name // "'"$project"'"' "$project/package.json" 2>/dev/null || echo "$project")
+            fi
+            
+            cat >> combined/index.html << EOF
+              <a href="./$project/" class="project-card">
+                <div class="project-name">$project_title</div>
+                <div class="project-description">Slidev presentation</div>
+              </a>
+          EOF
+          done
+          
+          cat >> combined/index.html << 'EOF'
+            </div>
+          </body>
+          </html>
+          EOF
+
       - name: Setup Pages
-        if: matrix.project == fromJson(needs.detect-changes.outputs.projects)[0]
         uses: actions/configure-pages@v4
 
       - name: Upload artifact
-        if: matrix.project == fromJson(needs.detect-changes.outputs.projects)[0]
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ matrix.project }}/dist
+          path: combined
 
       - name: Deploy to GitHub Pages
-        if: matrix.project == fromJson(needs.detect-changes.outputs.projects)[0]
         id: deployment
         uses: actions/deploy-pages@v4
